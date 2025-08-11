@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered Kaleidoscope with TTS</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        canvas {
+            display: block;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.2);
+        }
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.6);
+            padding: 15px;
+            border-radius: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 10;
+        }
+        .controls input, .controls button {
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #555;
+            background-color: #333;
+            color: white;
+            font-size: 14px;
+        }
+        .controls input {
+            min-width: 200px;
+        }
+        .controls button {
+            cursor: pointer;
+            transition: background-color 0.3s, opacity 0.3s;
+        }
+        .controls button:hover:not(:disabled) {
+            background-color: #4CAF50;
+        }
+        .controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            text-align: center;
+        }
+        #loader, #name-display {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 20;
+            text-align: center;
+        }
+        #name-display {
+             cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="controls">
+        <input type="text" id="palette-prompt" placeholder="Describe a color theme...">
+        <button id="generate-palette-btn">✨ Generate Palette</button>
+        <button id="name-creation-btn">✨ Name My Creation</button>
+        <button id="read-name-btn">✨ Read Name Aloud</button>
+    </div>
+
+    <div class="instructions">
+        Click and drag to draw | Press 'S' to save | 'C' to clear | 1-9 to change symmetry
+    </div>
+    
+    <div id="loader" style="display: none;">Generating...</div>
+    <div id="name-display" style="display: none;" onclick="this.style.display='none'"></div>
+
+    <script>
+        // --- Global Variables ---
+        let symmetry = 6;
+        let angle;
+        let hueValue = 0;
+        let colorPalette = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF'];
+        let currentCanvas;
+        let lastGeneratedName = "";
+
+        /**
+         * p5.js setup function.
+         */
+        function setup() {
+            currentCanvas = createCanvas(windowWidth, windowHeight);
+            currentCanvas.parent('canvas-container');
+            angle = 360 / symmetry;
+            colorMode(HSB, 360, 100, 100, 100);
+            background(10);
+
+            // --- Event Listeners for new buttons ---
+            document.getElementById('generate-palette-btn').addEventListener('click', generateColorPalette);
+            document.getElementById('name-creation-btn').addEventListener('click', nameMyCreation);
+            document.getElementById('read-name-btn').addEventListener('click', readNameAloud);
+            
+            // Disable the read aloud button initially
+            document.getElementById('read-name-btn').disabled = true;
+        }
+
+        /**
+         * p5.js draw loop.
+         */
+        function draw() {
+            translate(width / 2, height / 2);
+
+            if (mouseIsPressed) {
+                const mx = mouseX - width / 2;
+                const my = mouseY - height / 2;
+                const pmx = pmouseX - width / 2;
+                const pmy = pmouseY - height / 2;
+
+                const paletteIndex = floor(map(hueValue, 0, 360, 0, colorPalette.length));
+                const c = color(colorPalette[paletteIndex]);
+                
+                stroke(c);
+                strokeWeight(2);
+
+                for (let i = 0; i < symmetry; i++) {
+                    rotate(radians(angle));
+                    line(mx, my, pmx, pmy);
+                    push();
+                    scale(1, -1);
+                    line(mx, my, pmx, pmy);
+                    pop();
+                }
+
+                hueValue = (hueValue + 0.5) % 360;
+            }
+        }
+
+        function showLoader(show, text = "Generating...") {
+            const loader = document.getElementById('loader');
+            loader.textContent = text;
+            loader.style.display = show ? 'block' : 'none';
+        }
+
+        async function callGemini(url, payload) {
+            let response;
+            let attempts = 0;
+            const maxAttempts = 5;
+            let delay = 1000;
+
+            while (attempts < maxAttempts) {
+                try {
+                    response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        return await response.json();
+                    } else if (response.status === 429) {
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        delay *= 2;
+                        attempts++;
+                    } else {
+                        throw new Error(`API request failed with status ${response.status}`);
+                    }
+                } catch (error) {
+                    if (attempts >= maxAttempts - 1) {
+                        console.error("Error calling Gemini API:", error);
+                        throw error;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    delay *= 2;
+                    attempts++;
+                }
+            }
+            throw new Error("Gemini API call failed after multiple retries.");
+        }
+
+        async function generateColorPalette() {
+            const promptText = document.getElementById('palette-prompt').value;
+            if (!promptText) {
+                alert("Please enter a description for the color palette.");
+                return;
+            }
+            showLoader(true, "Generating Palette...");
+
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [{ text: `Generate a color palette of 5 hex codes for the theme: "${promptText}".` }] }],
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: { "colors": { "type": "ARRAY", "items": { "type": "STRING" } } },
+                        required: ["colors"]
+                    }
+                }
+            };
+
+            try {
+                const result = await callGemini(apiUrl, payload);
+                const generatedText = result.candidates[0].content.parts[0].text;
+                const parsedJson = JSON.parse(generatedText);
+                if (parsedJson.colors && parsedJson.colors.length > 0) {
+                    colorPalette = parsedJson.colors;
+                    background(10);
+                }
+            } catch (error) {
+                console.error("Failed to generate color palette:", error);
+                alert("Sorry, I couldn't generate the palette. Please try again.");
+            } finally {
+                showLoader(false);
+            }
+        }
+
+        async function nameMyCreation() {
+            showLoader(true, "Naming Artwork...");
+            const base64ImageData = currentCanvas.elt.toDataURL('image/png').split(',')[1];
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [
+                    { text: "Give a short, creative, and poetic name for this artwork. Respond with only the name." },
+                    { inlineData: { mimeType: "image/png", data: base64ImageData } }
+                ]}]
+            };
+
+            try {
+                const result = await callGemini(apiUrl, payload);
+                const name = result.candidates[0].content.parts[0].text;
+                lastGeneratedName = name.trim();
+                const nameDisplay = document.getElementById('name-display');
+                nameDisplay.textContent = `"${lastGeneratedName}" (click to close)`;
+                nameDisplay.style.display = 'block';
+                document.getElementById('read-name-btn').disabled = false;
+            } catch (error) {
+                console.error("Failed to name creation:", error);
+                alert("Sorry, I couldn't think of a name right now. Please try again.");
+            } finally {
+                showLoader(false);
+            }
+        }
+        
+        /**
+         * ✨ Reads the generated artwork name aloud using the Gemini TTS API.
+         */
+        async function readNameAloud() {
+            if (!lastGeneratedName) return;
+            showLoader(true, "Generating Audio...");
+
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+            const payload = {
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [{ parts: [{ text: `Say with a gentle, artistic tone: ${lastGeneratedName}` }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                },
+            };
+
+            try {
+                const result = await callGemini(apiUrl, payload);
+                const audioData = result.candidates[0].content.parts[0].inlineData.data;
+                const pcmData = base64ToArrayBuffer(audioData);
+                const pcm16 = new Int16Array(pcmData);
+                // Gemini TTS returns audio at 24000Hz sample rate
+                const wavBlob = pcmToWav(pcm16, 24000);
+                const audioUrl = URL.createObjectURL(wavBlob);
+                new Audio(audioUrl).play();
+
+            } catch (error) {
+                console.error("Failed to generate audio:", error);
+                alert("Sorry, I couldn't generate the audio. Please try again.");
+            } finally {
+                showLoader(false);
+            }
+        }
+        
+        // --- Audio Helper Functions ---
+        function base64ToArrayBuffer(base64) {
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        function pcmToWav(pcmData, sampleRate) {
+            const numChannels = 1;
+            const bitsPerSample = 16;
+            const blockAlign = (numChannels * bitsPerSample) / 8;
+            const byteRate = sampleRate * blockAlign;
+            const dataSize = pcmData.length * (bitsPerSample / 8);
+            const buffer = new ArrayBuffer(44 + dataSize);
+            const view = new DataView(buffer);
+
+            function writeString(view, offset, string) {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            }
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + dataSize, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, byteRate, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, bitsPerSample, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, dataSize, true);
+
+            for (let i = 0; i < pcmData.length; i++) {
+                view.setInt16(44 + i * 2, pcmData[i], true);
+            }
+
+            return new Blob([view], { type: 'audio/wav' });
+        }
+
+
+        function keyPressed() {
+            if (key === 's' || key === 'S') saveCanvas('kaleidoscope_pattern', 'png');
+            if (key === 'c' || key === 'C') {
+                background(10);
+                document.getElementById('read-name-btn').disabled = true;
+                lastGeneratedName = "";
+            }
+            const numKey = parseInt(key);
+            if (!isNaN(numKey) && numKey > 0 && numKey <= 9) {
+                symmetry = numKey;
+                angle = 360 / symmetry;
+                background(10);
+            }
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            background(10);
+        }
+    </script>
+</body>
+</html>
